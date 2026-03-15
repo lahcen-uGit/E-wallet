@@ -1,4 +1,4 @@
-import { finduserbymail, getBeneficiaires } from "../Models/database.js";
+import { finduserbymail, getBeneficiaires, database } from "../Models/database.js";
 
 
 
@@ -40,6 +40,9 @@ Depenses.textContent = totalDep + " " + user.wallet.currency;
 activeCards.textContent = user.wallet.cards.length;
 
 
+
+
+
 // Remplir la liste des bénéficiaires
 
 function populateBeneficiaires() {
@@ -79,7 +82,7 @@ Trasnferbtn.addEventListener("click", function () {
     transfSection.classList.remove("hidden");
 });
 
-// =============================================
+
 // Fermer le formulaire button annuler et X
 
 function closeTransfer() {
@@ -88,13 +91,6 @@ function closeTransfer() {
 
 if (closeTransferBtn) closeTransferBtn.addEventListener("click", closeTransfer);
 if (cancelTransferBtn) cancelTransferBtn.addEventListener("click", closeTransfer);
-
-
-
-
-
-
-
 
 
 // Validation et soumission du transfert
@@ -106,9 +102,6 @@ transferForm.addEventListener("submit", function (e) {
     const fromCardNum = sourceCardSelect.value;
     const montant = parseFloat(amountInput.value);
 
-    // Toute la validation est geree par les callbacks imbriques dans faireTransfert
-
-    // Effectuer le transfert avec callbacks imbriques
     faireTransfert(
         user.id,
         fromCardNum,
@@ -117,9 +110,16 @@ transferForm.addEventListener("submit", function (e) {
         // onSuccess
         (result) => {
             alert(result.msg);
-            // Mettre a jour l'affichage depuis sessionStorage
             const updatedUser = JSON.parse(sessionStorage.getItem("Currentuser"));
             availableBalance.textContent = updatedUser.wallet.balance + " " + updatedUser.wallet.currency;
+
+            // recalculer revenus/dépenses et rafraîchir la liste
+            const dTx = updatedUser.wallet.transactions.filter((t) => t.type === "debit");
+            const cTx = updatedUser.wallet.transactions.filter((t) => t.type === "credit");
+            Depenses.textContent = dTx.reduce((s, t) => s + t.amount, 0) + " " + updatedUser.wallet.currency;
+            Revenue.textContent  = cTx.reduce((s, t) => s + t.amount, 0) + " " + updatedUser.wallet.currency;
+            renderTransactions();
+
             closeTransfer();
         },
         // onError
@@ -136,7 +136,7 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
   const toUser   = database.users.find((u) => u.id === toUserId);
   const card     = fromUser ? fromUser.wallet.cards.find((c) => c.numcards === fromCardNum) : null;
 
-  // ── Etape 1 : check amount ──────────────────────────────────────────
+  // Etape 1 : check amount
   const checkAmount = (montant, next) => {
     if (isNaN(montant) || montant <= 0) {
       return onError("Le montant doit être un nombre supérieur à 0.");
@@ -144,7 +144,7 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
     next(montant);
   };
 
-  // ── Etape 2 : check solde de la carte ──────────────────────────────
+  // Etape 2 : check solde de la carte
   const checkSolde = (montant, next) => {
     if (!card) {
       return onError("Carte source introuvable.");
@@ -158,7 +158,7 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
     next(montant);
   };
 
-  // ── Etape 3 : check bénéficiaire ───────────────────────────────────
+  // Etape 3 : check bénéficiaire
   const checkBeneficiaire = (montant, next) => {
     if (!toUser) {
       return onError("Bénéficiaire introuvable.");
@@ -169,12 +169,11 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
     next(montant);
   };
 
-  // ── Etape 4 : création des deux transactions + mise a jour soldes ──
+  // Etape 4 : création des deux transactions + mise a jour soldes
   const createTransactions = (montant) => {
     const date = new Date().toLocaleDateString("fr-FR");
     const newId = Date.now().toString();
 
-    // transaction DEBIT chez le sender
     const txDebit = {
       id: newId + "_d",
       type: "debit",
@@ -184,7 +183,6 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
       to: toUser.name,
     };
 
-    // transaction CREDIT chez le bénéficiaire
     const txCredit = {
       id: newId + "_c",
       type: "credit",
@@ -194,19 +192,15 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
       to: toUser.id,
     };
 
-    // Deduire du sender (carte + wallet)
     card.balance          -= montant;
     fromUser.wallet.balance -= montant;
     fromUser.wallet.transactions.push(txDebit);
 
-    // Crediter le beneficiaire (wallet)
     toUser.wallet.balance += montant;
     toUser.wallet.transactions.push(txCredit);
 
-    // Mettre a jour sessionStorage
     sessionStorage.setItem("Currentuser", JSON.stringify(fromUser));
 
-    // ── Valide : retourner true via onSuccess ──
     onSuccess({
       ok: true,
       msg: "Transfert réussi vers " + toUser.name + " !",
@@ -215,7 +209,7 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
     });
   };
 
-  // ── Lancer la chaine de callbacks imbriques ──
+  // Lancer la chaine de callbacks imbriques
   checkAmount(montant, (montant) =>
     checkSolde(montant, (montant) =>
       checkBeneficiaire(montant, (montant) =>
@@ -224,3 +218,50 @@ const faireTransfert = (fromUserId, fromCardNum, toUserId, montant, onSuccess, o
     )
   );
 };
+
+
+
+
+
+
+
+
+
+// Afficher les transactions récentes
+
+function renderTransactions() {
+    const list = document.getElementById("recentTransactionsList");
+    if (!list) return;
+
+    const currentUser = JSON.parse(sessionStorage.getItem("Currentuser"));
+    const transactions = currentUser.wallet.transactions;
+
+    // vider la liste avant de la remplir
+    list.innerHTML = "";
+
+    if (transactions.length === 0) {
+        list.innerHTML = "<p>Aucune transaction pour le moment.</p>";
+        return;
+    }
+
+    // parcourir chaque transaction et créer un élément li
+    for (let i = transactions.length - 1; i >= 0; i--) {
+        const t = transactions[i];
+
+        const li = document.createElement("li");
+        li.style.padding = "10px";
+        li.style.borderBottom = "1px solid #eee";
+        li.style.listStyle = "none";
+
+        if (t.type === "debit") {
+            li.innerHTML = " Envoyé à " + t.to + " — " + t.amount + " MAD — " + t.date;
+        } else {
+            li.innerHTML = " Reçu de " + t.from + " — " + t.amount + " MAD — " + t.date;
+        }
+
+        list.appendChild(li);
+    }
+}
+
+// Afficher les transactions au chargement de la page
+renderTransactions();
